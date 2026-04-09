@@ -1,18 +1,21 @@
 """
-Internal door placement algorithm.
+Internal door placement algorithm with isovist-based privacy scoring.
 
 Places doors between adjacent rooms using topological adjacency
-detection and visibility-optimised positioning.
+detection and multi-criteria privacy optimisation via isovist
+(visibility polygon) analysis.
 
 This module should be executed **before** the entrance-door algorithm
 because internal doors are more geometrically constrained (they must
 sit on a shared wall), and the entrance scoring benefits from knowing
 where internal doors are.
 
-Key features:
-    - Kitchens now receive a real physical door (no archway skip).
-    - Door position is chosen to maximise visibility into the private
-      area (bedrooms) when looking through the doorway.
+Scoring criteria (when isovist scoring is enabled):
+    1. Privacy       — minimise private-area exposure from public side
+    2. Bed concealment — bed NOT visible from entry gaze
+    3. Transition zone — prefer positions that create a natural turn
+    4. Furniture      — maximise usable continuous wall length
+    5. Public exposure — penalise entrance sightlines into bedrooms
 """
 
 from __future__ import annotations
@@ -39,8 +42,13 @@ from door_placement.geometry_utils import (
     extract_segments,
     segment_tangent_normal,
     inward_normal,
-    build_vision_cone,
     build_door_polygon,
+    estimate_bed_position,
+    measure_sightline_depth,
+)
+from door_placement.isovist import (
+    compute_isovist,
+    extract_wall_segments_from_floorplan,
 )
 
 
@@ -51,17 +59,6 @@ def place_internal_doors(
     config: Optional[InternalDoorConfig] = None,
 ) -> List[Door]:
     """Place internal doors for every room that needs one.
-
-    The algorithm:
-        1. For each non-living, non-entrance room, find adjacent rooms.
-        2. Pick the best target (prefer living rooms, then longest wall).
-        3. Find the longest shared wall segment.
-        4. If visibility scoring is enabled, slide the door along the
-           shared wall and pick the position that maximises the view
-           into the private area (bedrooms).  Otherwise, use the
-           corner-offset strategy.
-        5. Check for collisions with previously placed doors.
-        6. Register the door on the floor plan.
 
     Parameters
     ----------
@@ -81,14 +78,18 @@ def place_internal_doors(
     placed_doors: List[Door] = []
     min_spacing = cd * config.min_door_spacing_ratio
 
-    # Precompute the unified private-area polygon once for visibility scoring
+    # Precompute shared data for isovist scoring
     private_polys = [
         r.poly for r in floor_plan.rooms
         if r.type_id == ROOM_TYPE_BEDROOM
     ]
     unified_private = unary_union(private_polys) if private_polys else Polygon()
 
-    # Rooms that *generate* doors (not living rooms, entrances, etc.)
+    wall_segments = None
+    if config.enable_isovist_scoring:
+        wall_segments = extract_wall_segments_from_floorplan(floor_plan)
+
+    # Rooms that *generate* doors
     door_generating_types = {
         ROOM_TYPE_BEDROOM,
         ROOM_TYPE_KITCHEN,
@@ -123,7 +124,6 @@ def place_internal_doors(
             current_room.type_id, config.default_width_ratio
         )
         if width_ratio == 0.0:
-            # Room type has no physical door (explicit archway)
             print(f"[~] Room {current_room.room_id} ({current_room.name}) "
                   f"gets an open archway — no door placed.")
             continue
@@ -131,11 +131,10 @@ def place_internal_doors(
         door_width = cd * width_ratio
         door_depth = cd * config.default_depth_ratio
 
-        # ── Step 4: find & choose the best shared wall segment ──────────
+        # ── Step 4: find shared wall segments ───────────────────────────
         segments = extract_segments(shared_geom.simplify(2.0),
                                      min_length=door_width)
         if not segments:
-            # Fallback: try without minimum-length filter
             segments = extract_segments(shared_geom.simplify(2.0))
         if not segments:
             print(f"[!] No usable wall between Room {current_room.room_id} "
@@ -145,16 +144,16 @@ def place_internal_doors(
         best_seg = max(segments, key=lambda s: s.length)
 
         # ── Step 5: position the door ───────────────────────────────────
-        if (config.enable_visibility_scoring
+        if (config.enable_isovist_scoring
+                and wall_segments is not None
                 and not unified_private.is_empty):
-            # Slide along the shared wall, scoring each position
-            door_center, door_poly = _find_best_visibility_position(
-                best_seg,
-                door_width, door_depth,
+            door_center, door_poly, best_score = _isovist_score_positions(
+                best_seg, door_width, door_depth,
                 current_room, target_room,
                 unified_private,
                 placed_doors, min_spacing,
                 cd, config,
+                wall_segments, floor_plan,
             )
         else:
             # Fallback: corner-offset positioning
@@ -168,15 +167,15 @@ def place_internal_doors(
                 ux=ux, uy=uy, nx=nx, ny=ny,
                 half_width=door_width / 2, half_depth=door_depth / 2,
             )
+            best_score = 0.0
 
         if door_poly is None:
             print(f"[!] Cannot place door for Room "
                   f"{current_room.room_id} — no valid position found.")
             continue
 
-        # ── Step 6: collision check with existing doors ─────────────────
+        # ── Step 6: collision fallback ──────────────────────────────────
         if _collides_with_existing(door_poly, placed_doors, min_spacing):
-            # Try the mirror position (other end of the wall)
             p1, p2 = best_seg.coords[0], best_seg.coords[-1]
             (ux, uy), (nx, ny) = segment_tangent_normal(p1, p2)
             alt_center = _compute_door_position(
@@ -189,7 +188,6 @@ def place_internal_doors(
                 half_width=door_width / 2, half_depth=door_depth / 2,
             )
             if _collides_with_existing(door_poly, placed_doors, min_spacing):
-                # Last resort: midpoint
                 mid = best_seg.interpolate(0.5, normalized=True)
                 door_poly = build_door_polygon(
                     cx=mid.x, cy=mid.y,
@@ -204,8 +202,6 @@ def place_internal_doors(
         # ── Step 7: register ────────────────────────────────────────────
         p1, p2 = best_seg.coords[0], best_seg.coords[-1]
         (_, _), (nx, ny) = segment_tangent_normal(p1, p2)
-
-        # Compute the swing direction: the door opens INTO the target room
         swing_dir = inward_normal(best_seg, target_room.poly)
 
         door = Door(
@@ -215,15 +211,240 @@ def place_internal_doors(
             normal=(nx, ny),
             connects=(current_room, target_room),
             swing_direction=swing_dir,
+            score=best_score,
         )
         placed_doors.append(door)
         floor_plan.add_door(door)
-        print(f"[+] Door placed: {current_room.name} → {target_room.name}")
+        print(f"[+] Door placed: {current_room.name} → {target_room.name} "
+              f"(privacy score: {best_score:.2f})")
 
     return placed_doors
 
 
-# ── Private helpers ─────────────────────────────────────────────────────
+# ── Isovist-based multi-criteria scorer ─────────────────────────────────
+
+def _isovist_score_positions(
+    segment,             # LineString — shared wall
+    door_width: float,
+    door_depth: float,
+    current_room: Room,
+    target_room: Room,
+    unified_private: Polygon,
+    placed_doors: List[Door],
+    min_spacing: float,
+    char_dim: float,
+    config: InternalDoorConfig,
+    wall_segments: list,
+    floor_plan: FloorPlan,
+) -> Tuple[Optional[Tuple[float, float]], Optional[Polygon], float]:
+    """Score every candidate position using isovist-based multi-criteria.
+
+    For each candidate position along the shared wall:
+        1. Build the door polygon; skip if collision.
+        2. Compute two probe points (public side, private side).
+        3. Compute isovist from the public probe point.
+        4. Score on 5 criteria.
+        5. Return the position with the highest total score.
+    """
+    seg_len = segment.length
+    p1_coords = segment.coords[0]
+    p2_coords = segment.coords[-1]
+    (ux, uy), (nx, ny) = segment_tangent_normal(p1_coords, p2_coords)
+
+    # Determine inward normals
+    in_to_target = inward_normal(segment, target_room.poly)
+    in_to_current = (-in_to_target[0], -in_to_target[1])
+
+    isovist_radius = char_dim * config.isovist_max_radius_ratio
+    step = config.isovist_slide_step_px
+    half_door = door_width / 2
+    probe_offset = config.probe_offset
+
+    usable_start = half_door
+    usable_end = seg_len - half_door
+    if usable_end <= usable_start:
+        usable_start = seg_len / 2
+        usable_end = seg_len / 2
+
+    num_steps = max(1, int((usable_end - usable_start) / step))
+
+    # Precompute private area for normalisation
+    private_area = unified_private.area
+    if private_area < 1.0:
+        private_area = 1.0
+
+    # Precompute entrance door position (if it exists)
+    entrance_position = None
+    for d in floor_plan.doors:
+        if d.type_id == ROOM_TYPE_ENTRANCE:
+            entrance_position = d.center
+            break
+
+    # Precompute target room max depth (diagonal)
+    target_bounds = target_room.poly.bounds
+    max_room_depth = math.hypot(
+        target_bounds[2] - target_bounds[0],
+        target_bounds[3] - target_bounds[1],
+    )
+    if max_room_depth < 1.0:
+        max_room_depth = 1.0
+
+    # Precompute target room perimeter for furniture score
+    target_perimeter = target_room.poly.length
+    if target_perimeter < 1.0:
+        target_perimeter = 1.0
+
+    best_score = -float('inf')
+    best_center = None
+    best_poly = None
+
+    for i in range(num_steps + 1):
+        if num_steps <= 1:
+            dist = (usable_start + usable_end) / 2
+        else:
+            dist = usable_start + (usable_end - usable_start) * i / num_steps
+
+        pt = segment.interpolate(dist)
+        cx, cy = pt.x, pt.y
+
+        # Build door polygon
+        door_poly = build_door_polygon(
+            cx=cx, cy=cy,
+            ux=ux, uy=uy,
+            nx=nx, ny=ny,
+            half_width=half_door,
+            half_depth=door_depth / 2,
+        )
+
+        if _collides_with_existing(door_poly, placed_doors, min_spacing):
+            continue
+
+        # ── Probe points: public side and private side ──────────────────
+        pub_x = cx + in_to_current[0] * probe_offset
+        pub_y = cy + in_to_current[1] * probe_offset
+        priv_x = cx + in_to_target[0] * probe_offset
+        priv_y = cy + in_to_target[1] * probe_offset
+
+        # ── Compute isovist from the PUBLIC side of the door ────────────
+        try:
+            public_isovist = compute_isovist(
+                (pub_x, pub_y), wall_segments, max_radius=isovist_radius
+            )
+        except Exception:
+            continue
+
+        # ────────────────────────────────────────────────────────────────
+        # CRITERION 1: Privacy Score
+        # How much of the private zone is exposed from the public side?
+        # Lower exposure = higher privacy score.
+        # ────────────────────────────────────────────────────────────────
+        try:
+            exposed = public_isovist.intersection(unified_private)
+            exposed_area = exposed.area if not exposed.is_empty else 0.0
+        except Exception:
+            exposed_area = 0.0
+        privacy_score = 1.0 - (exposed_area / private_area)
+
+        # ────────────────────────────────────────────────────────────────
+        # CRITERION 2: Bed Concealment Score
+        # If current room is a bedroom, check if the bed is hidden.
+        # ────────────────────────────────────────────────────────────────
+        bed_score = 1.0  # default: perfect (not a bedroom or no bed)
+        if current_room.type_id == ROOM_TYPE_BEDROOM:
+            try:
+                bed_rect = estimate_bed_position(
+                    current_room.poly, (cx, cy),
+                    bed_size_ratio=config.bed_size_ratio,
+                )
+                bed_visible = public_isovist.intersection(bed_rect)
+                bed_visible_area = bed_visible.area if not bed_visible.is_empty else 0.0
+                bed_area = bed_rect.area if bed_rect.area > 0 else 1.0
+                bed_score = 1.0 - (bed_visible_area / bed_area)
+            except Exception:
+                bed_score = 0.5  # uncertain
+
+        # ────────────────────────────────────────────────────────────────
+        # CRITERION 3: Transition Zone Score
+        # Measure sightline depth: how far can you see straight through
+        # the door into the target room.  Shorter = better (natural turn).
+        # ────────────────────────────────────────────────────────────────
+        try:
+            depth = measure_sightline_depth(
+                (pub_x, pub_y), in_to_target, target_room.poly,
+            )
+        except Exception:
+            depth = max_room_depth
+        transition_score = 1.0 - min(1.0, depth / max_room_depth)
+
+        # ────────────────────────────────────────────────────────────────
+        # CRITERION 4: Furniture Placement Score
+        # After placing a door, how much continuous wall is left in the
+        # target room?  We approximate: longest remaining segment ratio.
+        # ────────────────────────────────────────────────────────────────
+        try:
+            target_coords = list(target_room.poly.exterior.coords)
+            max_wall_len = 0.0
+            from shapely.geometry import LineString
+            for j in range(len(target_coords) - 1):
+                seg_j = LineString([target_coords[j], target_coords[j + 1]])
+                # Subtract the door width if this segment overlaps the door
+                if seg_j.distance(Point(cx, cy)) < door_width:
+                    remaining = seg_j.length - door_width
+                    max_wall_len = max(max_wall_len, remaining)
+                else:
+                    max_wall_len = max(max_wall_len, seg_j.length)
+            furniture_score = max_wall_len / target_perimeter
+        except Exception:
+            furniture_score = 0.5
+
+        # ────────────────────────────────────────────────────────────────
+        # CRITERION 5: Public Exposure Penalty
+        # If the entrance door can see through this door into the
+        # private zone, penalise heavily.
+        # ────────────────────────────────────────────────────────────────
+        public_exposure_penalty = 0.0
+        if entrance_position is not None:
+            try:
+                entrance_isovist = compute_isovist(
+                    entrance_position, wall_segments,
+                    max_radius=isovist_radius,
+                )
+                # Can the entrance see this door opening?
+                if entrance_isovist.contains(Point(cx, cy)):
+                    # The entrance can see the door.
+                    # Now check if the private zone behind the door is also visible.
+                    private_through_door = entrance_isovist.intersection(
+                        unified_private
+                    )
+                    if not private_through_door.is_empty:
+                        public_exposure_penalty = min(
+                            1.0,
+                            private_through_door.area / private_area,
+                        )
+            except Exception:
+                public_exposure_penalty = 0.0
+
+        # ── Weighted total ──────────────────────────────────────────────
+        total = (
+            config.privacy_weight          * privacy_score
+            + config.bed_concealment_weight * bed_score
+            + config.transition_weight      * transition_score
+            + config.furniture_weight       * furniture_score
+            - config.public_exposure_weight * public_exposure_penalty
+        )
+
+        if total > best_score:
+            best_score = total
+            best_center = (cx, cy)
+            best_poly = door_poly
+
+    if best_center is None:
+        return (None, None, 0.0)
+
+    return (best_center, best_poly, best_score)
+
+
+# ── Adjacent room helpers ───────────────────────────────────────────────
 
 def _find_adjacent_rooms(
     room: Room,
@@ -238,7 +459,6 @@ def _find_adjacent_rooms(
     for other in all_rooms:
         if other.room_id == room.room_id:
             continue
-        # Skip doors / stairs / entrance pseudo-rooms
         if other.type_id in (ROOM_TYPE_ENTRANCE, ROOM_TYPE_INT_DOOR,
                              ROOM_TYPE_STAIRS):
             continue
@@ -264,7 +484,6 @@ def _pick_target_room(
     """
     rtype = current_room.type_id
 
-    # ── Bedroom, Kitchen, Storage: try living room first ────────────────
     if rtype in (ROOM_TYPE_BEDROOM, ROOM_TYPE_KITCHEN, ROOM_TYPE_STORAGE):
         living_adj = [(r, g) for r, g in adjacents
                       if r.type_id == ROOM_TYPE_LIVING]
@@ -272,164 +491,38 @@ def _pick_target_room(
             return max(living_adj, key=lambda x: x[1].length)
         return max(adjacents, key=lambda x: x[1].length)
 
-    # ── Bathroom: hall bath vs en-suite ──────────────────────────────────
     if rtype == ROOM_TYPE_BATHROOM:
         living_adj = [(r, g) for r, g in adjacents
                       if r.type_id == ROOM_TYPE_LIVING]
         bed_adj = [(r, g) for r, g in adjacents
                    if r.type_id == ROOM_TYPE_BEDROOM]
 
-        # If it has a decent wall with a living room → hall bath
         valid_living = [(r, g) for r, g in living_adj
-                        if g.length > floor_plan_door_width_hint(config)]
+                        if g.length > _door_width_hint()]
         if valid_living:
             return max(valid_living, key=lambda x: x[1].length)
-        # Otherwise connect to bedroom → en-suite
         if bed_adj:
             return max(bed_adj, key=lambda x: x[1].length)
         return max(adjacents, key=lambda x: x[1].length)
 
-    # Fallback for any other type
     return max(adjacents, key=lambda x: x[1].length)
 
 
-def floor_plan_door_width_hint(config: InternalDoorConfig) -> float:
-    """Quick estimate of door width for the 'valid living wall' test.
-
-    We use a rough approximation since we don't have char_dim here;
-    the test is just to distinguish hall-bath from en-suite.
-    """
-    return 30.0  # sensible pixel-estimate for adjacency check
-
-
-def _find_best_visibility_position(
-    segment,   # LineString — the shared wall
-    door_width: float,
-    door_depth: float,
-    current_room: Room,
-    target_room: Room,
-    unified_private: Polygon,
-    placed_doors: List[Door],
-    min_spacing: float,
-    char_dim: float,
-    config: InternalDoorConfig,
-) -> Tuple[Tuple[float, float], Optional[Polygon]]:
-    """Slide the door along the shared wall and pick the position
-    that maximises the view into the private area (bedrooms).
-
-    For each candidate position we:
-        1. Build the door polygon.
-        2. Skip if it collides with an existing door.
-        3. Shoot a vision cone from the door opening into
-           *target_room* (inward normal).
-        4. Score = area of (cone ∩ unified_private).  More private
-           area visible = higher score.
-
-    Returns (center_xy, door_polygon) for the best position, or
-    ((0,0), None) if no valid position is found.
-    """
-    seg_len = segment.length
-    p1_coords = segment.coords[0]
-    p2_coords = segment.coords[-1]
-    (ux, uy), (nx, ny) = segment_tangent_normal(p1_coords, p2_coords)
-
-    # Determine inward normal toward the *target* room
-    in_nx, in_ny = inward_normal(segment, target_room.poly)
-
-    cone_length = char_dim * config.vis_cone_length_ratio
-    spread_deg  = config.vis_cone_spread_deg
-    step        = config.vis_slide_step_px
-    half_door   = door_width / 2
-
-    usable_start = half_door
-    usable_end   = seg_len - half_door
-
-    if usable_end <= usable_start:
-        # Wall is barely long enough — only one position (midpoint)
-        usable_start = seg_len / 2
-        usable_end   = seg_len / 2
-
-    num_steps = max(1, int((usable_end - usable_start) / step))
-
-    best_score = -float('inf')
-    best_center = None
-    best_poly   = None
-
-    for i in range(num_steps + 1):
-        if num_steps <= 1:
-            dist = (usable_start + usable_end) / 2
-        else:
-            dist = usable_start + (usable_end - usable_start) * i / num_steps
-
-        pt = segment.interpolate(dist)
-        cx, cy = pt.x, pt.y
-
-        # Build door polygon
-        door_poly = build_door_polygon(
-            cx=cx, cy=cy,
-            ux=ux, uy=uy,
-            nx=nx, ny=ny,
-            half_width=half_door,
-            half_depth=door_depth / 2,
-        )
-
-        # Skip collisions
-        if _collides_with_existing(door_poly, placed_doors, min_spacing):
-            continue
-
-        # Build vision cone from the door into the target room
-        cone = build_vision_cone(
-            cx, cy, in_nx, in_ny,
-            spread_deg=spread_deg,
-            length=cone_length,
-        )
-
-        # Score: how much of the private area is visible
-        visible_private = cone.intersection(unified_private)
-        score = visible_private.area if not visible_private.is_empty else 0.0
-
-        if score > best_score:
-            best_score  = score
-            best_center = (cx, cy)
-            best_poly   = door_poly
-
-    if best_center is None:
-        return ((0, 0), None)
-
-    return (best_center, best_poly)
+def _door_width_hint() -> float:
+    """Quick estimate of door width for adjacency tests."""
+    return 30.0
 
 
 def _compute_door_position(
-    segment: object,  # LineString
-    door_width: float,
-    offset_ratio: float,
+    segment, door_width: float, offset_ratio: float,
 ) -> Tuple[float, float]:
-    """Compute door centre position along a wall segment.
-
-    Instead of always placing at the midpoint, we offset the door
-    ``offset_ratio`` of the way along the wall from the nearer end,
-    clamping so the door rectangle doesn't hang over either end.
-
-    Parameters
-    ----------
-    segment : LineString
-    door_width : float
-    offset_ratio : float
-        0.3 means 30 % from one end.
-
-    Returns
-    -------
-    (x, y) : tuple[float, float]
-    """
+    """Compute door centre along a wall segment using offset ratio."""
     seg_len = segment.length
     half_door = door_width / 2
-
-    # Clamp: keep at least half a door-width from each end
     min_dist = half_door
     max_dist = seg_len - half_door
 
     if max_dist <= min_dist:
-        # Wall is barely long enough — just use midpoint
         dist = seg_len / 2
     else:
         dist = min_dist + (max_dist - min_dist) * offset_ratio

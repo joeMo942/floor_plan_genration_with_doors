@@ -72,20 +72,42 @@ class InternalDoorConfig:
     # Minimum distance between any two placed doors (ratio of char dim).
     min_door_spacing_ratio: float = 0.04
 
-    # ── Privacy-visibility scoring ──────────────────────────────────────
-    # When True, the algorithm slides the door along the shared wall and
-    # picks the position that maximises the view into the private area
-    # (bedrooms / private rooms) from the door opening.
-    enable_visibility_scoring: bool = True
+    # ── Isovist-based privacy scoring ────────────────────────────────────
+    # When True, the algorithm uses a proper isovist (visibility polygon)
+    # computed via angular-sweep raycasting to score each candidate door
+    # position on 5 privacy criteria.  This is the gold standard in
+    # architectural spatial analysis.
+    enable_isovist_scoring: bool = True
 
-    # Vision-cone half-angle (degrees) used for scoring door positions.
-    vis_cone_spread_deg: float = 45.0
+    # ── Multi-criteria scoring weights ──────────────────────────────────
+    # W1: Privacy — minimise private-area exposure from public side
+    privacy_weight: float = 4.0
 
-    # How deep the vision cone extends (ratio of characteristic dim).
-    vis_cone_length_ratio: float = 0.40
+    # W2: Bed concealment — bed should NOT be visible from entry gaze
+    bed_concealment_weight: float = 3.0
 
-    # Slide step size (px) when sampling candidate positions.
-    vis_slide_step_px: float = 8.0
+    # W3: Transition zone — prefer positions that create a natural turn
+    transition_weight: float = 2.0
+
+    # W4: Furniture placement — maximise usable continuous wall length
+    furniture_weight: float = 1.5
+
+    # W5: Public exposure penalty — penalise entrance sightlines
+    public_exposure_weight: float = 3.5
+
+    # ── Isovist engine parameters ───────────────────────────────────────
+    # Maximum isovist radius (ratio of characteristic dim)
+    isovist_max_radius_ratio: float = 0.6
+
+    # Estimated bed size (ratio of room's shortest dimension)
+    bed_size_ratio: float = 0.25
+
+    # How far from the wall centre to probe the public/private sides (px)
+    probe_offset: float = 5.0
+
+    # Slide step size (px) when sampling candidate positions
+    isovist_slide_step_px: float = 5.0
+
 
 
 @dataclass

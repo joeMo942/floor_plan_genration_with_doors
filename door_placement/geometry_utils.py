@@ -237,3 +237,143 @@ def validate_door_swing(
         if arc_poly.intersects(obs):
             return False
     return True
+
+
+# ── Bed-position estimation ─────────────────────────────────────────────
+
+def estimate_bed_position(
+    room_poly: Polygon,
+    door_center: Tuple[float, float],
+    bed_size_ratio: float = 0.25,
+) -> Polygon:
+    """Estimate a likely bed rectangle inside a bedroom.
+
+    Heuristic: the bed is placed against the wall segment that is
+    **furthest** from the door.  The bed occupies ``bed_size_ratio``
+    of the room's shortest bounding-box dimension as its short side,
+    and twice that as its long side.
+
+    Parameters
+    ----------
+    room_poly : Polygon
+        The bedroom polygon.
+    door_center : (x, y)
+        Centre of the placed (or candidate) door.
+    bed_size_ratio : float
+        Fraction of the room's shortest dimension used as bed width.
+
+    Returns
+    -------
+    Polygon
+        Estimated bed rectangle.
+    """
+    bounds = room_poly.bounds  # (minx, miny, maxx, maxy)
+    w = bounds[2] - bounds[0]
+    h = bounds[3] - bounds[1]
+    short_dim = min(w, h)
+
+    bed_short = short_dim * bed_size_ratio
+    bed_long  = bed_short * 2.0
+
+    # Find the wall segment furthest from the door
+    coords = list(room_poly.exterior.coords)
+    best_seg = None
+    best_dist = -1.0
+    door_pt = Point(door_center)
+
+    for i in range(len(coords) - 1):
+        seg = LineString([coords[i], coords[i + 1]])
+        if seg.length < bed_long * 0.5:
+            continue  # too short to place a bed
+        d = seg.distance(door_pt)
+        if d > best_dist:
+            best_dist = d
+            best_seg = seg
+
+    if best_seg is None:
+        # Fallback: use room centroid
+        cx, cy = room_poly.centroid.x, room_poly.centroid.y
+        return Polygon([
+            (cx - bed_long/2, cy - bed_short/2),
+            (cx + bed_long/2, cy - bed_short/2),
+            (cx + bed_long/2, cy + bed_short/2),
+            (cx - bed_long/2, cy + bed_short/2),
+        ])
+
+    # Place bed at the midpoint of the furthest wall
+    mid = best_seg.interpolate(0.5, normalized=True)
+    mx, my = mid.x, mid.y
+
+    p1, p2 = best_seg.coords[0], best_seg.coords[-1]
+    (ux, uy), (nx, ny) = segment_tangent_normal(p1, p2)
+
+    # The bed lies flat against the wall:
+    #   long side along the wall tangent, short side into the room
+    # We need the inward normal to push the bed into the room
+    probe_in = Point(mx + nx * 5, my + ny * 5)
+    if not room_poly.contains(probe_in):
+        nx, ny = -nx, -ny  # flip normal
+
+    corners = [
+        (mx - bed_long/2 * ux,             my - bed_long/2 * uy),
+        (mx + bed_long/2 * ux,             my + bed_long/2 * uy),
+        (mx + bed_long/2 * ux + bed_short * nx, my + bed_long/2 * uy + bed_short * ny),
+        (mx - bed_long/2 * ux + bed_short * nx, my - bed_long/2 * uy + bed_short * ny),
+    ]
+    bed = Polygon(corners)
+
+    # Clip to room interior
+    bed = bed.intersection(room_poly)
+    if bed.is_empty:
+        cx, cy = room_poly.centroid.x, room_poly.centroid.y
+        return Polygon([
+            (cx - bed_long/2, cy - bed_short/2),
+            (cx + bed_long/2, cy - bed_short/2),
+            (cx + bed_long/2, cy + bed_short/2),
+            (cx - bed_long/2, cy + bed_short/2),
+        ])
+
+    return bed
+
+
+# ── Sightline depth measurement ─────────────────────────────────────────
+
+def measure_sightline_depth(
+    origin: Tuple[float, float],
+    direction: Tuple[float, float],
+    room_poly: Polygon,
+) -> float:
+    """Measure how far a straight sightline penetrates into a room.
+
+    Casts a single ray from *origin* in *direction* and returns the
+    distance to the first intersection with the room boundary.
+
+    Parameters
+    ----------
+    origin : (x, y)
+    direction : (dx, dy)   unit vector
+    room_poly : Polygon
+
+    Returns
+    -------
+    float
+        Distance in pixels.  0.0 if no intersection.
+    """
+    ox, oy = origin
+    dx, dy = direction
+    length = math.hypot(room_poly.bounds[2] - room_poly.bounds[0],
+                        room_poly.bounds[3] - room_poly.bounds[1]) * 2
+
+    far_pt = (ox + dx * length, oy + dy * length)
+    ray = LineString([(ox, oy), far_pt])
+
+    intersection = ray.intersection(room_poly.exterior)
+    if intersection.is_empty:
+        return 0.0
+
+    if intersection.geom_type == "Point":
+        return Point(origin).distance(intersection)
+    elif intersection.geom_type == "MultiPoint":
+        return min(Point(origin).distance(pt) for pt in intersection.geoms)
+    else:
+        return Point(origin).distance(intersection)
