@@ -283,7 +283,25 @@ def run_gsdiff_inference(
             
             simple_cycles_test = cleaned_polygons
 
-        # 6. JSON Assembly
+        # 6. Draw the layout preview with PIL
+        img = Image.new('RGB', (resolution * aa_scale, resolution * aa_scale), (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        for polygon_i, polygon in enumerate(simple_cycles_test):
+            draw.polygon(polygon, fill=colors[simple_cycles_semantics_test[polygon_i]], outline=None)
+        
+        for polygon_i, polygon in enumerate(simple_cycles_test):
+            for point_i, point in enumerate(polygon):
+                if point_i < len(polygon) - 1:
+                    p1 = (point[0], point[1])
+                    rad = round((3 if aa_scale == 1 else 3.5) * aa_scale)
+                    draw.rectangle((p1[0] - rad, p1[1] - rad, p1[0] + rad, p1[1] + rad), fill=(150, 150, 150), outline=None)
+                    p2 = (polygon[point_i + 1][0], polygon[point_i + 1][1])
+                    draw.line((p1[0], p1[1], p2[0], p2[1]), fill=(150, 150, 150), width=7 * aa_scale)
+
+        final_image_path = os.path.join(output_dir, f"custom_pred_{test_count}.png")
+        img.save(final_image_path)
+
+        # 7. JSON Assembly
         room_mapping = {0: "Living", 1: "Bedroom", 2: "Storage", 3: "Kitchen", 4: "Bathroom", 5: "Balcony", 6: "External"}
         floorplan_data = {"rooms": []}
 
@@ -296,7 +314,7 @@ def run_gsdiff_inference(
                 "coordinates": [(p[0] * aa_scale, p[1] * aa_scale) for p in polygon]
             })
 
-        # Generate Mask for Outer Boundary
+        # 8. Generate Mask for Outer Boundary & Draw Boundary Image
         mask = np.zeros((resolution * aa_scale, resolution * aa_scale), dtype=np.uint8)
         for r_pts in floorplan_data["rooms"]:
             pts = np.array(r_pts["coordinates"], np.int32)
@@ -309,6 +327,12 @@ def run_gsdiff_inference(
             epsilon = 0.001 * cv2.arcLength(main_contour, True)
             approx = cv2.approxPolyDP(main_contour, epsilon, True)
             outer_boundary_coords = approx.reshape(-1, 2).tolist()
+            
+            boundary_img = np.ones((resolution * aa_scale, resolution * aa_scale, 3), dtype=np.uint8) * 255
+            thickness = 5 * aa_scale
+            cv2.drawContours(boundary_img, [approx], -1, (0, 0, 0), thickness=thickness)
+            boundary_image_path = os.path.join(output_dir, f"custom_boundary_{test_count}.png")
+            cv2.imwrite(boundary_image_path, boundary_img)
 
         floorplan_data["outer_boundary"] = outer_boundary_coords
 
