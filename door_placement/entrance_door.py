@@ -245,6 +245,7 @@ def place_entrance_door(
         normal=best_door.normal,
         score=best_door.total,
         connects=(main_living, None),
+        swing_direction=(nx, ny),  # swings inward into the living room
     )
     floor_plan.add_door(door)
 

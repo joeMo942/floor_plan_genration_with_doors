@@ -60,6 +60,10 @@ def load_floorplan(path: Union[str, Path], resolution: int = 512) -> FloorPlan:
 def save_floorplan(fp: FloorPlan, path: Union[str, Path]) -> None:
     """Serialise a :class:`FloorPlan` back to GSDiff-compatible JSON.
 
+    For door rooms (entrance / internal), the output also includes
+    ``swing_direction`` — a unit-vector [dx, dy] showing which way
+    the door swings open.
+
     Parameters
     ----------
     fp : FloorPlan
@@ -71,12 +75,30 @@ def save_floorplan(fp: FloorPlan, path: Union[str, Path]) -> None:
     rooms_data = []
     for r in fp.rooms:
         coords = [[int(x), int(y)] for x, y in r.poly.exterior.coords]
-        rooms_data.append({
+        room_dict = {
             "room_id":       r.room_id,
             "room_type_id":  r.type_id,
             "room_type_name": r.name,
             "coordinates":   coords,
-        })
+        }
+
+        # For doors, also export swing direction from the Door object
+        if r.type_id in (ROOM_TYPE_ENTRANCE, ROOM_TYPE_INT_DOOR):
+            # Find the matching Door object
+            matching_door = None
+            for d in fp.doors:
+                if d.type_id == r.type_id and d.poly.equals(r.poly):
+                    matching_door = d
+                    break
+            if matching_door is not None:
+                sx, sy = matching_door.swing_direction
+                room_dict["swing_direction"] = [round(sx, 4), round(sy, 4)]
+                room_dict["center"] = [
+                    round(matching_door.center[0], 2),
+                    round(matching_door.center[1], 2),
+                ]
+
+        rooms_data.append(room_dict)
 
     outer_coords = []
     if fp.outer_boundary and not fp.outer_boundary.is_empty:
@@ -90,3 +112,4 @@ def save_floorplan(fp: FloorPlan, path: Union[str, Path]) -> None:
 
     with open(path, "w") as f:
         json.dump(data, f, indent=4)
+

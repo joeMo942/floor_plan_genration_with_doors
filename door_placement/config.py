@@ -53,7 +53,7 @@ class InternalDoorConfig:
         ROOM_TYPE_BEDROOM:  0.065,   # standard 80–90 cm
         ROOM_TYPE_BATHROOM: 0.052,   # narrower 60–70 cm
         ROOM_TYPE_STORAGE:  0.052,   # narrow
-        ROOM_TYPE_KITCHEN:  0.0,     # open archway — no physical door
+        ROOM_TYPE_KITCHEN:  0.065,   # standard kitchen door
     })
 
     # Placement offset: how far along the shared wall (from the nearer
@@ -71,6 +71,21 @@ class InternalDoorConfig:
 
     # Minimum distance between any two placed doors (ratio of char dim).
     min_door_spacing_ratio: float = 0.04
+
+    # ── Privacy-visibility scoring ──────────────────────────────────────
+    # When True, the algorithm slides the door along the shared wall and
+    # picks the position that maximises the view into the private area
+    # (bedrooms / private rooms) from the door opening.
+    enable_visibility_scoring: bool = True
+
+    # Vision-cone half-angle (degrees) used for scoring door positions.
+    vis_cone_spread_deg: float = 45.0
+
+    # How deep the vision cone extends (ratio of characteristic dim).
+    vis_cone_length_ratio: float = 0.40
+
+    # Slide step size (px) when sampling candidate positions.
+    vis_slide_step_px: float = 8.0
 
 
 @dataclass

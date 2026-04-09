@@ -98,6 +98,9 @@ class Door:
     normal:      Tuple[float, float] = (0.0, 0.0)
     connects:    Tuple[Optional[Room], Optional[Room]] = (None, None)
     score:       float = 0.0
+    # Direction the door swings open into (unit vector).
+    # Points from the hinge toward the room the door opens into.
+    swing_direction: Tuple[float, float] = (0.0, 0.0)
 
     @property
     def name(self) -> str:
