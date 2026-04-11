@@ -8,6 +8,8 @@ architectural bubble diagram.
 
 import random
 import networkx as nx
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 def generate_topology_from_form(user_input: dict) -> tuple[list[int], list[list[int]]]:
@@ -141,3 +143,4 @@ def visualize_agent_output(nodes: list[int], edges: list[list[int]], save_path: 
         print(f"Topology visualization saved to {save_path}")
     else:
         plt.show()
+    plt.close()
