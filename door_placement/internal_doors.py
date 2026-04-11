@@ -458,42 +458,42 @@ def _isovist_score_positions(
                 public_exposure_penalty = 0.0
 
         # ────────────────────────────────────────────────────────────────
-        # CRITERION 6: Private Zone View  (bedroom-only)
-        # From INSIDE the bedroom looking out through the door, how
-        # much of the visible area falls within the private zone?
-        # Higher ratio = the bedroom door opens toward the private wing.
+        # CRITERION 6: Private Wing Proximity  (bedroom-only)
+        # The private-side isovist CANNOT see through walls, so instead
+        # we use a proximity measure:  from the PUBLIC-side exit point
+        # (where you step into the living room), how close are you to
+        # the private-wing centroid vs the public-wing centroid?
+        # Doors that exit closer to other bedrooms score higher.
         # ────────────────────────────────────────────────────────────────
-        # CRITERION 7: Public Zone View Penalty  (bedroom-only)
-        # Penalise if the bedroom's outward view is dominated by the
-        # public zone (living room / kitchen).
+        # CRITERION 7: Public Wing Distance Penalty  (bedroom-only)
+        # Penalise if the exit point is close to the public-wing
+        # centroid (kitchen / living area centre).
         # ────────────────────────────────────────────────────────────────
         private_view_score = 0.0
         public_view_penalty = 0.0
 
         if current_room.type_id == ROOM_TYPE_BEDROOM:
             try:
-                private_isovist = compute_isovist(
-                    (priv_x, priv_y), wall_segments,
-                    max_radius=isovist_radius,
-                )
-                # How much of the view is private zone?
-                priv_visible = private_isovist.intersection(unified_private)
-                priv_visible_area = (
-                    priv_visible.area if not priv_visible.is_empty else 0.0
-                )
+                exit_pt = Point(pub_x, pub_y)
 
-                # How much of the view is public zone?
-                pub_visible = private_isovist.intersection(unified_public)
-                pub_visible_area = (
-                    pub_visible.area if not pub_visible.is_empty else 0.0
-                )
+                # Distance from exit to private-wing centroid
+                if not unified_private.is_empty:
+                    d_to_private = exit_pt.distance(unified_private.centroid)
+                else:
+                    d_to_private = 0.0
 
-                total_visible = priv_visible_area + pub_visible_area
-                if total_visible > 0:
-                    # Score = fraction of view that is private (0→1)
-                    private_view_score = priv_visible_area / total_visible
-                    # Penalty = fraction of view that is public (0→1)
-                    public_view_penalty = pub_visible_area / total_visible
+                # Distance from exit to public-wing centroid
+                if not unified_public.is_empty:
+                    d_to_public = exit_pt.distance(unified_public.centroid)
+                else:
+                    d_to_public = 0.0
+
+                total_dist = d_to_private + d_to_public
+                if total_dist > 0:
+                    # Closer to private = higher score (0→1)
+                    private_view_score = d_to_public / total_dist
+                    # Closer to public = higher penalty (0→1)
+                    public_view_penalty = d_to_private / total_dist
             except Exception:
                 private_view_score = 0.0
                 public_view_penalty = 0.0
