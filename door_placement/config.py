@@ -63,11 +63,11 @@ class InternalDoorConfig:
 
     # Buffer radius used to detect shared walls between rooms whose
     # AI-generated polygons may not perfectly touch.
-    adjacency_buffer_px: float = 2.0
+    adjacency_buffer_px: float = 6.0
 
     # Minimum shared-area threshold (px²) for two rooms to be considered
     # adjacent after buffering.
-    adjacency_area_threshold: float = 5.0
+    adjacency_area_threshold: float = 3.0
 
     # Minimum distance between any two placed doors (ratio of char dim).
     min_door_spacing_ratio: float = 0.04

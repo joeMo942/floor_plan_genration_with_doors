@@ -177,9 +177,22 @@ def place_internal_doors(
                     door_poly = poly
                     best_seg = seg_candidate
 
-            # Fallback: if no segment yielded a valid position, use longest
+            # Fallback: if no segment yielded a valid position, try the
+            # longest segment with corner-offset placement (even if short)
             if best_seg is None:
                 best_seg = max(segments, key=lambda s: s.length)
+                # Attempt corner-offset placement on this segment
+                door_center = _compute_door_position(
+                    best_seg, door_width, config.offset_from_corner_ratio
+                )
+                p1, p2 = best_seg.coords[0], best_seg.coords[-1]
+                (ux, uy), (nx, ny) = segment_tangent_normal(p1, p2)
+                door_poly = build_door_polygon(
+                    cx=door_center[0], cy=door_center[1],
+                    ux=ux, uy=uy, nx=nx, ny=ny,
+                    half_width=door_width / 2, half_depth=door_depth / 2,
+                )
+                best_score = 0.0
         else:
             # Fallback: corner-offset positioning on the longest segment
             best_seg = max(segments, key=lambda s: s.length)
