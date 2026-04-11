@@ -68,32 +68,30 @@ def main():
     )
     
     # ---------------------------------------------------------
-    # STEP 4: Select Plans & Apply Door Placement
+    # STEP 4: Apply Door Placement to ALL Plans
     # ---------------------------------------------------------
-    print(f"\n[STEP 4] Generation Complete. Plans saved to '{json_dir}/'")
-    plans_str = input(
-        "\nEnter the plan numbers you want to apply door placement to,\n"
-        "separated by comma (e.g. 0,3,14) [default: 0]: "
-    )
-    
-    if not plans_str.strip():
-        plans_str = "0"
-        
-    selected_plans = [p.strip() for p in plans_str.split(',')]
-    
+    print(f"\n[STEP 4] Running Door Placement on all {num_samples} plans...")
+
     door_output_dir = "outputs/final_door_placements"
-    for plan_num in selected_plans:
+    success_count = 0
+
+    for plan_num in range(num_samples):
         input_json = os.path.join(json_dir, f"custom_pred_{plan_num}.json")
         out_path = os.path.join(door_output_dir, f"plan_{plan_num}")
-        
+
         if os.path.exists(input_json):
-            print(f"\n>>> Running Door Placement on {input_json} >>>")
-            run_pipeline(input_json=input_json, output_dir=out_path)
+            print(f"\n>>> [{plan_num+1}/{num_samples}] Door Placement on plan {plan_num} >>>")
+            try:
+                run_pipeline(input_json=input_json, output_dir=out_path)
+                success_count += 1
+            except Exception as e:
+                print(f"  [!] Error on plan {plan_num}: {e}")
         else:
             print(f"  [!] Warning: {input_json} does not exist. Skipping.")
 
     print("\n" + "="*60)
-    print("ALL DONE! Check the 'outputs/final_door_placements' folder.")
+    print(f"  ALL DONE! {success_count}/{num_samples} plans processed.")
+    print(f"  Output: '{door_output_dir}/'")
     print("="*60)
 
 
