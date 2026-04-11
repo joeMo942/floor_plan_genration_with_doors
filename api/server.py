@@ -45,14 +45,14 @@ def create_topology(config: RoomConfig):
     }
     
     agent_nodes, agent_edges = generate_topology_from_form(user_input)
-    os.makedirs("outputs/custom_test", exist_ok=True)
-    vis_path = "outputs/custom_test/bubble_diagram.png"
+    os.makedirs("outputs/topology", exist_ok=True)
+    vis_path = "outputs/topology/bubble_diagram.png"
     visualize_agent_output(agent_nodes, agent_edges, save_path=vis_path)
     
     return {
         "nodes": agent_nodes,
         "edges": agent_edges,
-        "image_url": "/api/outputs/custom_test/bubble_diagram.png"
+        "image_url": "/api/outputs/topology/bubble_diagram.png"
     }
 
 async def run_inference_background(task_id: str, nodes: list, edges: list):

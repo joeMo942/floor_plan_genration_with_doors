@@ -16,6 +16,7 @@ function App() {
   const [selectedPlans, setSelectedPlans] = useState([]);
   const [finalPlans, setFinalPlans] = useState([]);
   const [loadingText, setLoadingText] = useState('');
+  const [lightboxImage, setLightboxImage] = useState(null);
 
   const updateConfig = (key, delta) => {
     setConfig(prev => ({
@@ -209,10 +210,20 @@ function App() {
           <h2>4. Final Door Placements</h2>
           <div className="gallery-grid">
             {finalPlans.map(plan => (
-              <div key={plan.id} className="gallery-item">
+              <div key={plan.id} className="gallery-item" onClick={() => setLightboxImage(`${plan.image_url}?t=${Date.now()}`)}>
                 <img src={`${plan.image_url}?t=${Date.now()}`} alt={`Final Plan ${plan.id}`} />
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* LIGHTBOX MODAL */}
+      {lightboxImage && (
+        <div className="lightbox" onClick={() => setLightboxImage(null)}>
+          <div className="lightbox-content" onClick={(e) => e.stopPropagation()}>
+            <button className="lightbox-close" onClick={() => setLightboxImage(null)}>×</button>
+            <img src={lightboxImage} alt="Enlarged Plan" />
           </div>
         </div>
       )}
