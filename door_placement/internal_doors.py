@@ -85,6 +85,13 @@ def place_internal_doors(
     ]
     unified_private = unary_union(private_polys) if private_polys else Polygon()
 
+    # Public zone: living rooms + kitchens (used for bedroom zone scoring)
+    public_polys = [
+        r.poly for r in floor_plan.rooms
+        if r.type_id in (ROOM_TYPE_LIVING, ROOM_TYPE_KITCHEN)
+    ]
+    unified_public = unary_union(public_polys) if public_polys else Polygon()
+
     wall_segments = None
     if config.enable_isovist_scoring:
         wall_segments = extract_wall_segments_from_floorplan(floor_plan)
@@ -150,7 +157,7 @@ def place_internal_doors(
             door_center, door_poly, best_score = _isovist_score_positions(
                 best_seg, door_width, door_depth,
                 current_room, target_room,
-                unified_private,
+                unified_private, unified_public,
                 placed_doors, min_spacing,
                 cd, config,
                 wall_segments, floor_plan,
@@ -230,6 +237,7 @@ def _isovist_score_positions(
     current_room: Room,
     target_room: Room,
     unified_private: Polygon,
+    unified_public: Polygon,
     placed_doors: List[Door],
     min_spacing: float,
     char_dim: float,
@@ -243,8 +251,10 @@ def _isovist_score_positions(
         1. Build the door polygon; skip if collision.
         2. Compute two probe points (public side, private side).
         3. Compute isovist from the public probe point.
-        4. Score on 5 criteria.
-        5. Return the position with the highest total score.
+        4. Score on 5 base criteria.
+        5. (Bedrooms only) Compute isovist from the private side and
+           score on private-zone view and public-zone view penalty.
+        6. Return the position with the highest total score.
     """
     seg_len = segment.length
     p1_coords = segment.coords[0]
@@ -268,10 +278,14 @@ def _isovist_score_positions(
 
     num_steps = max(1, int((usable_end - usable_start) / step))
 
-    # Precompute private area for normalisation
+    # Precompute zone areas for normalisation
     private_area = unified_private.area
     if private_area < 1.0:
         private_area = 1.0
+
+    public_area = unified_public.area
+    if public_area < 1.0:
+        public_area = 1.0
 
     # Precompute entrance door position (if it exists)
     entrance_position = None
@@ -424,13 +438,56 @@ def _isovist_score_positions(
             except Exception:
                 public_exposure_penalty = 0.0
 
+        # ────────────────────────────────────────────────────────────────
+        # CRITERION 6: Private Zone View  (bedroom-only)
+        # From INSIDE the bedroom looking out through the door, how
+        # much of the visible area falls within the private zone?
+        # Higher ratio = the bedroom door opens toward the private wing.
+        # ────────────────────────────────────────────────────────────────
+        # CRITERION 7: Public Zone View Penalty  (bedroom-only)
+        # Penalise if the bedroom's outward view is dominated by the
+        # public zone (living room / kitchen).
+        # ────────────────────────────────────────────────────────────────
+        private_view_score = 0.0
+        public_view_penalty = 0.0
+
+        if current_room.type_id == ROOM_TYPE_BEDROOM:
+            try:
+                private_isovist = compute_isovist(
+                    (priv_x, priv_y), wall_segments,
+                    max_radius=isovist_radius,
+                )
+                # How much of the view is private zone?
+                priv_visible = private_isovist.intersection(unified_private)
+                priv_visible_area = (
+                    priv_visible.area if not priv_visible.is_empty else 0.0
+                )
+
+                # How much of the view is public zone?
+                pub_visible = private_isovist.intersection(unified_public)
+                pub_visible_area = (
+                    pub_visible.area if not pub_visible.is_empty else 0.0
+                )
+
+                total_visible = priv_visible_area + pub_visible_area
+                if total_visible > 0:
+                    # Score = fraction of view that is private (0→1)
+                    private_view_score = priv_visible_area / total_visible
+                    # Penalty = fraction of view that is public (0→1)
+                    public_view_penalty = pub_visible_area / total_visible
+            except Exception:
+                private_view_score = 0.0
+                public_view_penalty = 0.0
+
         # ── Weighted total ──────────────────────────────────────────────
         total = (
-            config.privacy_weight          * privacy_score
-            + config.bed_concealment_weight * bed_score
-            + config.transition_weight      * transition_score
-            + config.furniture_weight       * furniture_score
-            - config.public_exposure_weight * public_exposure_penalty
+            config.privacy_weight                  * privacy_score
+            + config.bed_concealment_weight         * bed_score
+            + config.transition_weight              * transition_score
+            + config.furniture_weight               * furniture_score
+            - config.public_exposure_weight         * public_exposure_penalty
+            + config.private_zone_view_weight       * private_view_score
+            - config.public_zone_view_penalty_weight * public_view_penalty
         )
 
         if total > best_score:

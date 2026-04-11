@@ -95,6 +95,16 @@ class InternalDoorConfig:
     # W5: Public exposure penalty — penalise entrance sightlines
     public_exposure_weight: float = 3.5
 
+    # W6: Private zone view (bedroom-only) — reward bedroom doors whose
+    # outward view (from inside the bedroom looking out) covers more of
+    # the private zone (other bedrooms / private corridor).
+    private_zone_view_weight: float = 4.5
+
+    # W7: Public zone view penalty (bedroom-only) — penalise bedroom
+    # doors whose outward view looks into the public zone (living room,
+    # kitchen).
+    public_zone_view_penalty_weight: float = 3.0
+
     # ── Isovist engine parameters ───────────────────────────────────────
     # Maximum isovist radius (ratio of characteristic dim)
     isovist_max_radius_ratio: float = 0.6
