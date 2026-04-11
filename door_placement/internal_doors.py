@@ -148,22 +148,41 @@ def place_internal_doors(
                   f"and Room {target_room.room_id} — skipping.")
             continue
 
-        best_seg = max(segments, key=lambda s: s.length)
-
         # ── Step 5: position the door ───────────────────────────────────
+        # Score positions on ALL shared wall segments and pick the global
+        # best — not just the longest segment.  A shorter wall that
+        # scores higher (e.g. faces the private zone) must win.
         if (config.enable_isovist_scoring
                 and wall_segments is not None
                 and not unified_private.is_empty):
-            door_center, door_poly, best_score = _isovist_score_positions(
-                best_seg, door_width, door_depth,
-                current_room, target_room,
-                unified_private, unified_public,
-                placed_doors, min_spacing,
-                cd, config,
-                wall_segments, floor_plan,
-            )
+            best_score = -float('inf')
+            door_center = None
+            door_poly = None
+            best_seg = None
+
+            for seg_candidate in segments:
+                if seg_candidate.length < door_width:
+                    continue  # too short for a door
+                ctr, poly, scr = _isovist_score_positions(
+                    seg_candidate, door_width, door_depth,
+                    current_room, target_room,
+                    unified_private, unified_public,
+                    placed_doors, min_spacing,
+                    cd, config,
+                    wall_segments, floor_plan,
+                )
+                if ctr is not None and scr > best_score:
+                    best_score = scr
+                    door_center = ctr
+                    door_poly = poly
+                    best_seg = seg_candidate
+
+            # Fallback: if no segment yielded a valid position, use longest
+            if best_seg is None:
+                best_seg = max(segments, key=lambda s: s.length)
         else:
-            # Fallback: corner-offset positioning
+            # Fallback: corner-offset positioning on the longest segment
+            best_seg = max(segments, key=lambda s: s.length)
             door_center = _compute_door_position(
                 best_seg, door_width, config.offset_from_corner_ratio
             )
