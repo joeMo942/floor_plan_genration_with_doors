@@ -37,6 +37,7 @@ function App() {
       setTopology(data);
       setStatus('TOPO_READY');
     } catch (err) {
+      alert("Error generating topology: " + err.message);
       console.error(err);
       setStatus('IDLE');
     }
@@ -80,6 +81,7 @@ function App() {
         setStatus('TOPO_READY');
       });
     } catch (err) {
+      alert("Error generating floor plans: " + err.message);
       console.error(err);
       setStatus('TOPO_READY');
     }
@@ -110,6 +112,7 @@ function App() {
         setStatus('PLANS_READY');
       });
     } catch (err) {
+      alert("Error generating doors: " + err.message);
       console.error(err);
       setStatus('PLANS_READY');
     }

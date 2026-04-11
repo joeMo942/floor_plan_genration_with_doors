@@ -41,7 +41,7 @@ class DoorRequest(BaseModel):
 def create_topology(config: RoomConfig):
     user_input = {
         "property_type": "apartment",
-        "rooms": config.dict()
+        "rooms": config.dict() if hasattr(config, 'dict') else dict(config)
     }
     
     agent_nodes, agent_edges = generate_topology_from_form(user_input)
