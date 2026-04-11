@@ -39,21 +39,25 @@ class DoorRequest(BaseModel):
 
 @app.post("/api/topology")
 def create_topology(config: RoomConfig):
-    user_input = {
-        "property_type": "apartment",
-        "rooms": config.dict() if hasattr(config, 'dict') else dict(config)
-    }
-    
-    agent_nodes, agent_edges = generate_topology_from_form(user_input)
-    os.makedirs("outputs/topology", exist_ok=True)
-    vis_path = "outputs/topology/bubble_diagram.png"
-    visualize_agent_output(agent_nodes, agent_edges, save_path=vis_path)
-    
-    return {
-        "nodes": agent_nodes,
-        "edges": agent_edges,
-        "image_url": "/api/outputs/topology/bubble_diagram.png"
-    }
+    try:
+        user_input = {
+            "property_type": "apartment",
+            "rooms": config.dict() if hasattr(config, 'dict') else dict(config)
+        }
+        
+        agent_nodes, agent_edges = generate_topology_from_form(user_input)
+        os.makedirs("outputs/topology", exist_ok=True)
+        vis_path = "outputs/topology/bubble_diagram.png"
+        visualize_agent_output(agent_nodes, agent_edges, save_path=vis_path)
+        
+        return {
+            "nodes": agent_nodes,
+            "edges": agent_edges,
+            "image_url": "/api/outputs/topology/bubble_diagram.png"
+        }
+    except Exception as e:
+        import traceback
+        raise HTTPException(status_code=500, detail=f"API Error: {str(e)}\n\nTraceback: {traceback.format_exc()}")
 
 async def run_inference_background(task_id: str, nodes: list, edges: list):
     try:

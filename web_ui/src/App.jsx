@@ -33,6 +33,10 @@ function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config)
       });
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.detail || `Server returned ${res.status}`);
+      }
       const data = await res.json();
       setTopology(data);
       setStatus('TOPO_READY');
